@@ -2,7 +2,6 @@
 
 [![ci](https://github.com/go-macos/virtualdisplay/actions/workflows/ci.yml/badge.svg)](https://github.com/go-macos/virtualdisplay/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-macos/virtualdisplay.svg)](https://pkg.go.dev/github.com/go-macos/virtualdisplay)
-[![Go Report Card](https://goreportcard.com/badge/github.com/go-macos/virtualdisplay)](https://goreportcard.com/report/github.com/go-macos/virtualdisplay)
 [![Coverage](https://img.shields.io/badge/coverage-100%25%20portable%20layer-1a7f37)](#tests)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 [![Private API](https://img.shields.io/badge/CoreGraphics-PRIVATE%20API-b45309)](#-this-is-private-coregraphics-api)
