@@ -1,5 +1,11 @@
 # go-macos/virtualdisplay
 
+[![ci](https://github.com/go-macos/virtualdisplay/actions/workflows/ci.yml/badge.svg)](https://github.com/go-macos/virtualdisplay/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-macos/virtualdisplay.svg)](https://pkg.go.dev/github.com/go-macos/virtualdisplay)
+[![Coverage](https://img.shields.io/badge/coverage-100%25%20portable%20layer-1a7f37)](#tests)
+[![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
+[![Private API](https://img.shields.io/badge/CoreGraphics-PRIVATE%20API-b45309)](#-this-is-private-coregraphics-api)
+
 Create **virtual displays on macOS** from pure Go, `CGO_ENABLED=0`, via
 [purego](https://github.com/ebitengine/purego). A display this package opens is
 a real display as far as the system is concerned: it has a `CGDirectDisplayID`,
@@ -181,6 +187,40 @@ server can invoke that block while the process is exiting, after the Go runtime
 has begun shutting down, which crashes — observed intermittently in a process
 that created a display and exited without closing it. With `OnTerminate` nil, no
 block is installed and there is nothing to call.
+
+## Tested against real hardware
+
+**What was measured, not assumed** above is the detail; this is the summary of
+what was actually connected to a machine, and what is known only from
+documentation. The difference matters for a package built on undocumented
+classes: a behaviour nobody ran is a guess, and nothing about the code says so.
+
+### Hardware connected and exercised
+
+| Hardware | What was actually done |
+|---|---|
+| Apple M4 Max, macOS 26.6.2 (build 25G83), Go 1.26.4, `CGO_ENABLED=0` | every finding in **What was measured, not assumed**, and everything below |
+| Samsung Odyssey G95NC, 7680×2160 | the one physical display attached throughout; it is the `id=4 7680x2160` in the `vdprobe` transcript |
+| Virtual displays | created and destroyed repeatedly, singly and **six at once at 1920×1080**, each coming up at exactly the requested size, all removed, the active display list returning to precisely what it was |
+| The un-removable-after-mode-change behaviour | reproduced deliberately, with `CGDisplaySetDisplayMode` and with `CGBeginDisplayConfiguration` at all three scopes |
+| Process death | a child process created a display and called `os.Exit(0)`; the window server reclaimed it |
+
+### Not proven on hardware
+
+- **Intel Macs.** Apple Silicon only. `darwin/amd64` is cross-compiled and
+  vetted in CI; no Intel Mac ever ran it.
+- **Any macOS other than 26.6.2.** These classes are undocumented and carry no
+  compatibility promise, so a finding on one release is evidence about that
+  release. `Available()` exists precisely because the answer may differ.
+- **More than one physical display attached.** Every measurement was taken with
+  exactly one.
+
+### Send us hardware
+
+An Intel Mac, another macOS release, or a multi-monitor machine would each turn
+one of the lines above from a guess into a measurement. If you want one
+verified, **send us the hardware** and what it shows will be listed here. Until
+then, an unverified line says so.
 
 ## Reproducing it
 
