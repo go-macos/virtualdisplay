@@ -98,15 +98,45 @@ func snapshot(t *testing.T) []uint32 {
 	return ids
 }
 
+// settledDisplays returns the display list once it has stopped changing.
+//
+// A test must not record "what was already there" while a PREVIOUS test's
+// display is still retiring: removal is asynchronous (see WaitGone), so the
+// list can shrink under a test that touched nothing. Measured — the two
+// 1600x1200 displays of the HiDPI tests were still listed when the next test
+// took its baseline, and vanished before its cleanup checked it, which came out
+// as "PRE-EXISTING DISPLAY 217 DISAPPEARED": an accusation aimed at the wrong
+// test.
+//
+// Two identical readings in a row is the whole rule. It costs one poll on a
+// quiet machine.
+func settledDisplays(t *testing.T) []DisplayInfo {
+	t.Helper()
+	deadline := time.Now().Add(removalBudget)
+	last := ""
+	for {
+		list, err := ActiveDisplays()
+		if err != nil {
+			t.Fatalf("ActiveDisplays: %v", err)
+		}
+		now := fmt.Sprint(list)
+		if now == last {
+			return list
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the display list never settled within %s (last: %s)", removalBudget, now)
+		}
+		last = now
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 // guardExistingDisplays records the displays that were already there and fails
 // the test if any of them changed — this package must only ever ADD a display
 // and REMOVE the one it added.
 func guardExistingDisplays(t *testing.T) []DisplayInfo {
 	t.Helper()
-	before, err := ActiveDisplays()
-	if err != nil {
-		t.Fatalf("ActiveDisplays: %v", err)
-	}
+	before := settledDisplays(t)
 	t.Cleanup(func() {
 		// Whatever happened, nothing this process still holds may survive.
 		if err := CloseAll(); err != nil {
