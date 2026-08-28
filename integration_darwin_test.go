@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +45,47 @@ func requireIntegration(t *testing.T) {
 	if err := Available(); err != nil {
 		t.Fatalf("Available: %v", err)
 	}
+}
+
+// ⛔ WHAT A DISPLAY LEAVES BEHIND, AND WHY THESE NAMES ARE FIXED
+//
+// macOS remembers every display it has ever seen: opening one writes an ICC
+// profile into /Library/ColorSync/Profiles/Displays, owned by root, and it
+// stays there for ever. The key is the monitor identity, which this package
+// derives from (name, size) — so a suite that invents a name per test leaves a
+// new file on the developer's machine every time a test is added, and a suite
+// that reuses names leaves the same handful whatever it does.
+//
+// Found the hard way: 106 profiles on one machine from this project's probes
+// and tests, out of 235 in total.
+//
+// So the tests draw their displays from a FIXED, DECLARED set. Two identities
+// stay separate on purpose — macOS remembers a mode per monitor, so the HiDPI
+// test must not be the same monitor as the plain one.
+const (
+	// testPool is how many interchangeable displays the tests may open.
+	testPool = 4
+	// testW and testH are the one size they all use, so the identity is the
+	// name alone.
+	testW, testH = 640, 480
+)
+
+// testIdentities is every monitor identity this suite can create. The last test
+// in this file asserts that the machine holds no others.
+func testIdentities() []string {
+	names := []string{"go-macos hidpi", "go-macos plain"}
+	for i := 1; i <= testPool; i++ {
+		names = append(names, fmt.Sprintf("go-macos test %d", i))
+	}
+	return names
+}
+
+// testSpec is one of the interchangeable displays, 1-based.
+func testSpec(i int) Spec {
+	if i < 1 || i > testPool {
+		panic(fmt.Sprintf("test display %d is outside the pool of %d", i, testPool))
+	}
+	return Spec{Name: fmt.Sprintf("go-macos test %d", i), Width: testW, Height: testH}
 }
 
 // snapshot returns the sorted IDs of the active displays.
@@ -121,7 +164,7 @@ func TestIntegrationCreateAndDestroy(t *testing.T) {
 	before := snapshot(t)
 	t.Logf("BEFORE: %v", before)
 
-	d, err := Open(Spec{Name: "go-macos integration", Width: 800, Height: 600})
+	d, err := Open(testSpec(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -159,8 +202,8 @@ func TestIntegrationCreateAndDestroy(t *testing.T) {
 			got = i
 		}
 	}
-	if got.Mode.PixelsWide != 800 || got.Mode.PixelsHigh != 600 {
-		t.Errorf("display %d is %s, want 800x600 pixels", d.ID(), got.Mode)
+	if got.Mode.PixelsWide != testW || got.Mode.PixelsHigh != testH {
+		t.Errorf("display %d is %s, want %dx%d pixels", d.ID(), got.Mode, testW, testH)
 	}
 	if got.Main {
 		t.Error("the virtual display became the MAIN display, which must never happen")
@@ -189,7 +232,7 @@ func TestIntegrationCloseTwice(t *testing.T) {
 	requireIntegration(t)
 	guardExistingDisplays(t)
 
-	d, err := Open(Spec{Name: "go-macos close-twice", Width: 640, Height: 480})
+	d, err := Open(testSpec(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -219,7 +262,7 @@ func TestIntegrationSeveralAtOnce(t *testing.T) {
 	const n = 3
 	ids := map[uint32]bool{}
 	for i := 0; i < n; i++ {
-		d, err := Open(Spec{Name: fmt.Sprintf("go-macos screen %d", i+1), Width: 640, Height: 480})
+		d, err := Open(testSpec(i + 1))
 		if err != nil {
 			t.Fatalf("Open #%d: %v", i+1, err)
 		}
@@ -393,7 +436,7 @@ func TestIntegrationProcessExitReclaims(t *testing.T) {
 	if os.Getenv("VIRTUALDISPLAY_CHILD") != "" {
 		// The child half. Create a display, print its ID, and die without
 		// closing anything.
-		d, err := Open(Spec{Name: "go-macos orphan", Width: 640, Height: 480})
+		d, err := Open(testSpec(2))
 		if err != nil {
 			fmt.Println("CHILD-ERROR", err)
 			os.Exit(3)
@@ -462,7 +505,7 @@ func TestIntegrationRemovalIsAsynchronous(t *testing.T) {
 	const n = 4
 	var ids []uint32
 	for i := 0; i < n; i++ {
-		d, err := Open(Spec{Name: fmt.Sprintf("go-macos going %d", i+1), Width: 640, Height: 480})
+		d, err := Open(testSpec(i + 1))
 		if err != nil {
 			t.Fatalf("Open #%d: %v", i+1, err)
 		}
@@ -503,4 +546,50 @@ func TestIntegrationRemovalIsAsynchronous(t *testing.T) {
 	if err := WaitGone(200*time.Millisecond, mainID); !errors.Is(err, ErrStillPresent) {
 		t.Fatalf("WaitGone on the MAIN display %d = %v, want ErrStillPresent: the wait is vacuous", mainID, err)
 	}
+}
+
+// displayProfiles is where macOS keeps what it remembers about every display it
+// has ever seen.
+const displayProfiles = "/Library/ColorSync/Profiles/Displays"
+
+// TestIntegrationZLeavesNoIdentityBehind is the check that keeps the rule above
+// honest, and it runs last (hence the Z) so it sees what the suite made.
+//
+// It reads what macOS remembers and fails on any "go-macos " monitor that is
+// not in the declared set. A test that invents a name now shows up here rather
+// than as a file nobody looks at, on a machine that is not the author's.
+func TestIntegrationZLeavesNoIdentityBehind(t *testing.T) {
+	requireIntegration(t)
+
+	entries, err := os.ReadDir(displayProfiles)
+	if err != nil {
+		t.Skipf("cannot read %s: %v", displayProfiles, err)
+	}
+	declared := map[string]bool{}
+	for _, n := range testIdentities() {
+		declared[n] = true
+	}
+
+	// "go-macos hidpi-3AF1....icc" -> "go-macos hidpi".
+	strip := regexp.MustCompile(`-[0-9A-Fa-f-]{36}\.icc$`)
+	var strays []string
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "go-macos ") {
+			continue
+		}
+		if id := strip.ReplaceAllString(name, ""); !declared[id] {
+			strays = append(strays, name)
+		}
+	}
+	if len(strays) > 0 {
+		sort.Strings(strays)
+		t.Errorf("this project left %d monitor identit(ies) macOS will remember for ever, "+
+			"outside the declared set %v:\n  %s\nremove them with:\n"+
+			"  sudo rm %s/'%s'",
+			len(strays), testIdentities(), strings.Join(strays, "\n  "),
+			displayProfiles, strings.Join(strays, "' '"+displayProfiles+"/'"))
+	}
+	t.Logf("%d profiles on this machine, %d of them this project's declared set",
+		len(entries), len(declared))
 }

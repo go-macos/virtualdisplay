@@ -303,6 +303,37 @@ test if any pre-existing display changed, and every test cleans up even on
 failure. Run the two HiDPI tests on their own — they must read the mode list
 before anything else in the process enumerates displays.
 
+### ⚠ What a display leaves on the machine, for ever
+
+Opening a virtual display makes macOS remember a monitor: it writes an ICC
+profile into `/Library/ColorSync/Profiles/Displays`, **owned by root**, and
+nothing removes it — not closing the display, not rebooting. The key is the
+monitor identity, which this package derives from the **name and pixel size**
+(see `Spec.SerialNumber`). So:
+
+- reusing a name and size reuses one profile, whatever a program does with it;
+- **inventing a name per test leaves a new file on the developer's machine every
+  time a test is added**;
+- the retry path in `Open` deliberately mints a *different* identity when the
+  window server will not bring a display up, so a run that retries leaves one
+  more.
+
+Measured on the machine this package was written on: **106 of 235** stored
+display profiles came from this project's probes and tests. That is somebody's
+system directory, filled by a test suite.
+
+The tests therefore draw from a **fixed, declared set of six identities**, and
+`TestIntegrationZLeavesNoIdentityBehind` reads what macOS remembers and **fails**
+on any `go-macos ` monitor outside it, printing the `rm` command. Write a
+throwaway probe the same way: reuse `go-macos test 1`, do not invent a name.
+
+To see what is there, and what a project has left behind:
+
+```
+ls /Library/ColorSync/Profiles/Displays
+```
+
+
 ## Requirements
 
 Go 1.26+, macOS on Apple Silicon or Intel. `CGO_ENABLED=0` throughout, no cgo,
