@@ -481,6 +481,15 @@ var (
 // in CGGetActiveDisplayList and the desktop has extended onto it — by the time
 // Open returns.
 //
+// ⚠ IT LEAVES SOMETHING ON THE MACHINE. macOS remembers every monitor it has
+// seen: opening a display writes an ICC profile into
+// /Library/ColorSync/Profiles/Displays, owned by root, and neither [Display.Close]
+// nor a reboot removes it. The identity is derived from the name and pixel size
+// (see [Spec.SerialNumber]), so a program that reuses a name reuses one profile
+// while one that invents names fills somebody's system directory. Measured on
+// one machine: 106 of 235 stored profiles came from this project's own probes
+// and tests. Use few, stable names.
+//
 // It never becomes the main display, and it never disturbs a display that
 // already existed.
 //
