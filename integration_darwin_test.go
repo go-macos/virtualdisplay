@@ -25,6 +25,11 @@ import (
 	"time"
 )
 
+// removalBudget is how long a removal is allowed to take before a test calls it
+// a failure. Six displays closed together took 1.9 s on macOS 26.6.2 — MORE than
+// settle, which is why a removal is waited for and never slept through.
+const removalBudget = 8 * time.Second
+
 // settle is how long to wait for the window server to reflect a change before
 // asserting on it.
 const settle = 1500 * time.Millisecond
@@ -64,7 +69,12 @@ func guardExistingDisplays(t *testing.T) []DisplayInfo {
 		if err := CloseAll(); err != nil {
 			t.Errorf("CloseAll during cleanup: %v", err)
 		}
-		time.Sleep(settle)
+		// Wait for the removals to be observable before accusing the test of
+		// leaving a display behind. A fixed sleep here read a batch that was
+		// merely still retiring as a leak.
+		if err := WaitGone(removalBudget, extras(t, before)...); err != nil {
+			t.Errorf("waiting for the displays this test made to go: %v", err)
+		}
 		after, err := ActiveDisplays()
 		if err != nil {
 			t.Errorf("ActiveDisplays during cleanup: %v", err)
@@ -194,9 +204,8 @@ func TestIntegrationCloseTwice(t *testing.T) {
 			t.Fatalf("Closed() = false after Close #%d", i)
 		}
 	}
-	time.Sleep(settle)
-	if contains(snapshot(t), d.ID()) {
-		t.Fatalf("display %d survived Close", d.ID())
+	if err := WaitGone(removalBudget, d.ID()); err != nil {
+		t.Fatalf("display %d survived Close: %v", d.ID(), err)
 	}
 }
 
@@ -241,7 +250,13 @@ func TestIntegrationSeveralAtOnce(t *testing.T) {
 	if err := CloseAll(); err != nil {
 		t.Fatalf("CloseAll: %v", err)
 	}
-	time.Sleep(settle)
+	mine := make([]uint32, 0, len(ids))
+	for id := range ids {
+		mine = append(mine, id)
+	}
+	if err := WaitGone(removalBudget, mine...); err != nil {
+		t.Fatalf("closing %d displays at once: %v", n, err)
+	}
 	if fmt.Sprint(snapshot(t)) != fmt.Sprint(before) {
 		t.Fatalf("display list is %v, was %v", snapshot(t), before)
 	}
@@ -417,5 +432,75 @@ func TestIntegrationProcessExitReclaims(t *testing.T) {
 	}
 	if fmt.Sprint(final) != fmt.Sprint(before) {
 		t.Fatalf("display list is %v, was %v", final, before)
+	}
+}
+
+// extras returns the IDs that are active now and were not in before — the
+// displays a test created, from the outside, without trusting a registry.
+func extras(t *testing.T, before []DisplayInfo) []uint32 {
+	t.Helper()
+	was := map[uint32]bool{}
+	for _, d := range before {
+		was[d.ID] = true
+	}
+	var ids []uint32
+	for _, id := range snapshot(t) {
+		if !was[id] {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// TestIntegrationRemovalIsAsynchronous is the measurement behind [WaitGone]:
+// closing a display returns before macOS stops listing it. It also proves the
+// wait is not vacuous, by asking for a display that will never go.
+func TestIntegrationRemovalIsAsynchronous(t *testing.T) {
+	requireIntegration(t)
+	before := guardExistingDisplays(t)
+
+	const n = 4
+	var ids []uint32
+	for i := 0; i < n; i++ {
+		d, err := Open(Spec{Name: fmt.Sprintf("go-macos going %d", i+1), Width: 640, Height: 480})
+		if err != nil {
+			t.Fatalf("Open #%d: %v", i+1, err)
+		}
+		ids = append(ids, d.ID())
+	}
+
+	start := time.Now()
+	if err := CloseAll(); err != nil {
+		t.Fatalf("CloseAll: %v", err)
+	}
+	returned := time.Since(start)
+
+	if err := WaitGone(removalBudget, ids...); err != nil {
+		t.Fatalf("WaitGone after closing %d displays: %v", n, err)
+	}
+	gone := time.Since(start)
+	t.Logf("CloseAll returned in %s; macOS stopped listing %d displays after %s", returned, n, gone)
+
+	// The point of the API: the second number can be an order of magnitude
+	// larger than the first. It is not asserted as a minimum, because a machine
+	// is free to be quick — what is asserted is that waiting is possible and
+	// terminates.
+	if gone > removalBudget {
+		t.Errorf("removal took %s, past the %s budget", gone, removalBudget)
+	}
+
+	// NEGATIVE CONTROL. The main display never goes away, so a wait for it must
+	// fail — otherwise the passes above would prove nothing.
+	var mainID uint32
+	for _, d := range before {
+		if d.Main {
+			mainID = d.ID
+		}
+	}
+	if mainID == 0 {
+		t.Skip("no main display reported, cannot run the negative control")
+	}
+	if err := WaitGone(200*time.Millisecond, mainID); !errors.Is(err, ErrStillPresent) {
+		t.Fatalf("WaitGone on the MAIN display %d = %v, want ErrStillPresent: the wait is vacuous", mainID, err)
 	}
 }

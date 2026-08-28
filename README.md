@@ -82,6 +82,7 @@ func Available() error                            // is the private API here, in
 func Open(spec Spec) (*Display, error)            // create a display
 func CloseAll() error                             // close every display this process opened
 func OpenCount() int
+func WaitGone(timeout time.Duration, ids ...uint32) error // wait for a removal to be observable
 
 func ActiveDisplays() ([]DisplayInfo, error)      // every display macOS reports, virtual or not
 func ActiveDisplayIDs() ([]uint32, error)
@@ -111,7 +112,7 @@ func (d *Display) Closed() bool
 ```
 
 Errors: `ErrUnsupported`, `ErrUnavailable`, `ErrInvalidSpec`, `ErrRejected`,
-`ErrCreateFailed`, `ErrWrongMode`, `ErrModesUnreadable`.
+`ErrCreateFailed`, `ErrWrongMode`, `ErrModesUnreadable`, `ErrStillPresent`.
 
 ## What was measured, not assumed
 
@@ -168,6 +169,27 @@ that creates a display and calls `os.Exit(0)`.
 
 That is not a licence to skip `Close`: the display stays on the user's desktop
 for as long as your process lives.
+
+### Removing a display is asynchronous — `Close` is not the end of it
+
+`Open` does not return until the display is active. `Close` has no matching
+wait, and the difference is not small: closing four 640x480 displays,
+`CloseAll` **returned in 33 µs** and macOS **kept listing them for 716 ms**
+(macOS 26.6.2, M4 Max; six 1920x1080 displays took **1.9 s**). A caller that
+closes and immediately reads `ActiveDisplays` sees displays that are already
+dead, and reads them as a leak — which is exactly what happened, twice, before
+this was measured.
+
+```go
+ids := []uint32{d1.ID(), d2.ID()}
+_ = CloseAll()
+if err := WaitGone(5*time.Second, ids...); err != nil {
+        // ErrStillPresent: something else holds them, or a mode was changed.
+}
+```
+
+This package's own integration tests used a fixed 1.5 s sleep before asserting
+a removal — **shorter than a batch actually takes**. They wait now.
 
 ### HiDPI is advertised, never entered
 

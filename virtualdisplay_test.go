@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -762,5 +763,106 @@ func TestDisplayInfoString(t *testing.T) {
 		Main: true}
 	if got, want := main.String(), "id=1 960x540 (1920x1080 pixels) at (0,0) [main]"; got != want {
 		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Waiting for a removal to be observable.
+// ---------------------------------------------------------------------------
+
+// listing installs a listDisplays seam that answers each call from steps in
+// turn, staying on the last one, and counts the calls. It models the only thing
+// that matters here: macOS keeps saying a released display is there, and then
+// stops.
+func listing(t *testing.T, steps ...[]DisplayInfo) *int {
+	t.Helper()
+	f := workingRuntime()
+	f.install(t)
+	calls := 0
+	listDisplays = func() ([]DisplayInfo, error) {
+		i := calls
+		calls++
+		if i >= len(steps) {
+			i = len(steps) - 1
+		}
+		return steps[i], nil
+	}
+	return &calls
+}
+
+func TestWaitGoneReturnsAtOnceWhenNothingIsListed(t *testing.T) {
+	calls := listing(t, []DisplayInfo{{ID: 1}})
+
+	if err := WaitGone(time.Second, 401, 402); err != nil {
+		t.Fatalf("WaitGone: %v", err)
+	}
+	if *calls != 1 {
+		t.Errorf("asked macOS %d times, want 1: a display already gone must not cost a poll", *calls)
+	}
+}
+
+func TestWaitGoneWaitsUntilTheDisplayActuallyLeaves(t *testing.T) {
+	// Two polls' worth of "still there", which is what a real release looks
+	// like: Close has returned and the WindowServer has not caught up.
+	present := []DisplayInfo{{ID: 1}, {ID: 401}}
+	calls := listing(t, present, present, []DisplayInfo{{ID: 1}})
+
+	start := time.Now()
+	if err := WaitGone(2*time.Second, 401); err != nil {
+		t.Fatalf("WaitGone: %v", err)
+	}
+	if *calls != 3 {
+		t.Errorf("asked macOS %d times, want 3", *calls)
+	}
+	if waited := time.Since(start); waited < removalPoll {
+		t.Errorf("returned after %s without polling; the wait is vacuous", waited)
+	}
+}
+
+func TestWaitGoneReportsADisplayThatWillNotGo(t *testing.T) {
+	// Both stay. This is the mode-was-changed case: the object is released and
+	// the display is still on the desktop.
+	listing(t, []DisplayInfo{{ID: 402}, {ID: 401}, {ID: 1}})
+
+	err := WaitGone(60*time.Millisecond, 401, 402)
+	if !errors.Is(err, ErrStillPresent) {
+		t.Fatalf("WaitGone err = %v, want ErrStillPresent", err)
+	}
+	// Sorted, so the message is stable, and both are named rather than only
+	// the first one found.
+	if !strings.Contains(err.Error(), "[401 402]") {
+		t.Errorf("WaitGone err = %q, want it to name [401 402]", err)
+	}
+}
+
+func TestWaitGoneWithNoTimeoutChecksOnceAndDoesNotSleep(t *testing.T) {
+	calls := listing(t, []DisplayInfo{{ID: 401}})
+
+	start := time.Now()
+	if err := WaitGone(0, 401); !errors.Is(err, ErrStillPresent) {
+		t.Fatalf("WaitGone(0) err = %v, want ErrStillPresent", err)
+	}
+	if waited := time.Since(start); waited >= removalPoll {
+		t.Errorf("WaitGone(0) waited %s; a zero timeout must not sleep", waited)
+	}
+	if *calls != 1 {
+		t.Errorf("asked macOS %d times, want 1", *calls)
+	}
+}
+
+func TestWaitGoneNeedsNoIDs(t *testing.T) {
+	listing(t, []DisplayInfo{{ID: 401}})
+	if err := WaitGone(time.Second); err != nil {
+		t.Fatalf("WaitGone() with no ids: %v", err)
+	}
+}
+
+func TestWaitGonePropagatesAListError(t *testing.T) {
+	f := workingRuntime()
+	f.listErr = ErrUnsupported
+	f.install(t)
+
+	if err := WaitGone(time.Second, 401); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("WaitGone err = %v, want ErrUnsupported", err)
 	}
 }

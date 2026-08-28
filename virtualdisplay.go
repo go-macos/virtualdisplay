@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Errors reported by the package. They are stable and may be tested with
@@ -77,6 +78,14 @@ var (
 	// process, or arrange to create the display before anything in the process
 	// enumerates displays.
 	ErrModesUnreadable = errors.New("virtualdisplay: CoreGraphics will not report this display's modes to this process")
+
+	// ErrStillPresent is what [WaitGone] returns when macOS is still listing a
+	// display after the time allowed for it to go.
+	//
+	// Reaching it means something holds the display that this package cannot
+	// release: another process created it, or its mode was changed after
+	// creation, which stops a release from removing it (see [Display.Close]).
+	ErrStillPresent = errors.New("virtualdisplay: macOS still lists a display that was released")
 )
 
 // Limits and defaults.
@@ -587,6 +596,9 @@ func (d *Display) Closed() bool {
 // nothing and return nil, which matters because the underlying teardown is an
 // Objective-C release and doing it twice would be a use-after-free.
 //
+// Close returns before macOS has finished retiring the display: the removal is
+// asynchronous, and [WaitGone] is how to wait for it to be observable.
+//
 // # Why this package never changes a display's mode
 //
 // Close only works because the display's mode was never changed. Measured on
@@ -707,6 +719,63 @@ func ActiveDisplayIDs() ([]uint32, error) {
 		ids[i] = d.ID
 	}
 	return ids, nil
+}
+
+// removalPoll is how often [WaitGone] asks macOS again. It matches the poll
+// [Open] uses while waiting for a display to appear.
+const removalPoll = 25 * time.Millisecond
+
+// WaitGone waits until macOS lists none of ids as an active display.
+//
+// ⚠ Releasing a display is ASYNCHRONOUS, and this is the half that says so.
+// [Display.Close] returns as soon as the CGVirtualDisplay object is released;
+// the WindowServer retires the display a moment later. Measured on macOS
+// 26.6.2, six 1920x1080 displays closed in one go were still in
+// [ActiveDisplays] 250 ms later and took 1.9 s to all leave — long enough that
+// a caller which closes and immediately looks sees displays that are already
+// dead and reads them as a leak. [Open] does not return until the display is
+// active; this is the other direction, and a release is not observable until
+// it finishes.
+//
+// A zero or negative timeout checks once and does not wait. No ids is not an
+// error: nothing is present, so the wait is over before it starts.
+func WaitGone(timeout time.Duration, ids ...uint32) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		list, err := listDisplays()
+		if err != nil {
+			return err
+		}
+		left := stillPresent(list, ids)
+		if len(left) == 0 {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w: %v after %s", ErrStillPresent, left, timeout)
+		}
+		nap := removalPoll
+		if left := time.Until(deadline); left < nap {
+			nap = left
+		}
+		time.Sleep(nap)
+	}
+}
+
+// stillPresent returns the wanted ids that are in list, sorted, so the error
+// names them in a stable order.
+func stillPresent(list []DisplayInfo, wanted []uint32) []uint32 {
+	active := make(map[uint32]bool, len(list))
+	for _, d := range list {
+		active[d.ID] = true
+	}
+	var left []uint32
+	for _, id := range wanted {
+		if active[id] {
+			left = append(left, id)
+		}
+	}
+	sort.Slice(left, func(i, j int) bool { return left[i] < left[j] })
+	return left
 }
 
 // ---------------------------------------------------------------------------
