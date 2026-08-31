@@ -222,10 +222,32 @@ const (
 // that cache is refreshed CGDisplayCopyDisplayMode reports nothing for a
 // display created moments ago — indefinitely, not merely for a while. Polling
 // the mode alone waits forever; enumerating first is what makes it appear.
+//
+// AND THE RUN LOOP HAS TO TURN. Enumerating is enough in a process that has
+// never had an AppKit event loop; once one has run, the display never becomes
+// active for this process at all unless the loop keeps being serviced. Measured
+// 2026-08-31, one process, four attempts:
+//
+//	before any AppKit                     opened in 392ms
+//	after NSApp, before the loop          opened in 169ms
+//	after the loop was entered and left   FAILED after 5.3s
+//	the same, pumping while it waits      opened in 528ms
+//
+// A menu-bar program that holds an event loop while it waits for hardware and
+// then builds its displays is in the third row, and it is not an unusual shape:
+// go-xrkit/desk spent a minute of retries there, fifteen displays refused, each
+// one created and then abandoned because nothing here turned the loop.
+//
+// Pumping does NOT replace the sleep. A run loop with nothing attached returns
+// at once -- 54µs for a 50ms pump, measured in go-macos/objc -- so pumping
+// alone would spin.
 func waitForDisplay(id uint32) (ActiveMode, error) {
 	deadline := time.Now().Add(modeReadyTimeout)
 	for {
-		active, err := listDisplaysDarwin()
+		// Through the seam, like every other read of the display list: this
+		// one used to call the platform function directly, which is why the
+		// wait was the one path no test could drive.
+		active, err := listDisplays()
 		if err != nil {
 			return ActiveMode{}, err
 		}
@@ -238,6 +260,7 @@ func waitForDisplay(id uint32) (ActiveMode, error) {
 			return ActiveMode{}, fmt.Errorf("%w: display %d never became active within %s",
 				ErrCreateFailed, id, modeReadyTimeout)
 		}
+		_ = pumpRunLoop(modeReadyPoll.Seconds())
 		time.Sleep(modeReadyPoll)
 	}
 }
@@ -483,3 +506,7 @@ func listDisplaysDarwin() ([]DisplayInfo, error) {
 	}
 	return out, nil
 }
+
+// pumpRunLoop services this thread's run loop, as a seam so a test can drive
+// the wait without one.
+var pumpRunLoop = objc.PumpRunLoop
