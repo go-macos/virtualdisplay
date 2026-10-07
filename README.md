@@ -336,7 +336,7 @@ ls /Library/ColorSync/Profiles/Displays
 
 ## Requirements
 
-Go 1.26+, macOS on Apple Silicon or Intel. `CGO_ENABLED=0` throughout, no cgo,
+Go 1.27.1+, macOS on Apple Silicon or Intel. `CGO_ENABLED=0` throughout, no cgo,
 no shelling out.
 
 ## Licence
